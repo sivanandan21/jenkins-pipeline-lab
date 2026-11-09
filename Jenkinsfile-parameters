@@ -1,0 +1,51 @@
+
+pipeline {
+
+    agent {
+        label 'linux-agent'
+    }
+
+    parameters {
+
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['Development', 'Testing', 'Production'],
+            description: 'Select deployment environment'
+        )
+
+        string(
+            name: 'APP_VERSION',
+            defaultValue: '1.0',
+            description: 'Application version'
+        )
+    }
+
+    stages {
+
+        stage('Display Configuration') {
+            steps {
+                echo "Environment: ${params.ENVIRONMENT}"
+                echo "Version: ${params.APP_VERSION}"
+            }
+        }
+
+        stage('Deployment') {
+            steps {
+                sh """
+                    echo "Deploying version ${params.APP_VERSION}"
+                    echo "Target: ${params.ENVIRONMENT}"
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
