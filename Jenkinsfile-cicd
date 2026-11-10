@@ -1,0 +1,140 @@
+pipeline {
+    agent {
+        label 'linux-agent'
+    }
+
+    options {
+        skipDefaultCheckout()
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        DOCKERHUB_REPO = 'sivapn/flask-jenkins-app'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        CONTAINER_NAME = 'flask-app'
+        DEPLOY_PORT = '8083'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo 'Checking out application source'
+                checkout scm
+
+                sh '''
+                    echo "===== SOURCE FILES ====="
+                    ls -la python-docker-lab/
+                '''
+            }
+        }
+
+        stage('Test Application') {
+            steps {
+                echo 'Running Python application tests'
+
+                sh '''
+                    docker run --rm \
+                      -v "$WORKSPACE/python-docker-lab:/app" \
+                      -w /app \
+                      python:3.14-slim \
+                      sh -c 'pip install --no-cache-dir -r requirements.txt && pytest -q'
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo 'Building Docker image'
+
+                sh '''
+                    docker build --pull \
+                      -t "$DOCKERHUB_REPO:$IMAGE_TAG" \
+                      -t "$DOCKERHUB_REPO:latest" \
+                      python-docker-lab
+
+                    docker images "$DOCKERHUB_REPO"
+                '''
+            }
+        }
+
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKERHUB_USER',
+                        passwordVariable: 'DOCKERHUB_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        set +x
+                        set -eu
+
+                        export DOCKER_CONFIG="$(mktemp -d)"
+
+                        cleanup() {
+                            docker logout >/dev/null 2>&1 || true
+                            rm -rf "$DOCKER_CONFIG"
+                        }
+
+                        trap cleanup EXIT
+
+                        printf '%s' "$DOCKERHUB_TOKEN" |
+                          docker login --username "$DOCKERHUB_USER" --password-stdin
+
+                        docker push "$DOCKERHUB_REPO:$IMAGE_TAG"
+                        docker push "$DOCKERHUB_REPO:latest"
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to Node2') {
+            agent {
+                label 'node2-docker'
+            }
+
+            steps {
+                echo 'Deploying Docker image on Node2'
+
+                sh '''
+                    set -eu
+
+                    docker pull "$DOCKERHUB_REPO:$IMAGE_TAG"
+
+                    docker rm -f "$CONTAINER_NAME" || true
+
+                    docker run -d \
+                      --name "$CONTAINER_NAME" \
+                      --restart unless-stopped \
+                      -p "$DEPLOY_PORT:5000" \
+                      "$DOCKERHUB_REPO:$IMAGE_TAG"
+
+                    sleep 3
+
+                    echo "===== HEALTH CHECK ====="
+                    curl --fail "http://localhost:$DEPLOY_PORT/health"
+
+                    echo "===== ADDITION TEST ====="
+                    curl --fail "http://localhost:$DEPLOY_PORT/add/10/20"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Complete CI/CD pipeline executed successfully!'
+        }
+
+        failure {
+            echo 'CI/CD pipeline failed. Check the stage logs.'
+        }
+
+        always {
+            echo 'Pipeline execution finished.'
+        }
+    }
+}
